@@ -1,0 +1,66 @@
+name: Bug report
+description: Something is broken or crashes the client
+title: '[Bug] '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Fill in the environment first — most Spotify Control issues are
+        environment-specific (OS, login mode, proxy).
+  - type: input
+    id: mod-version
+    attributes:
+      label: Mod version
+      description: Version shown on the About screen or the jar file name (e.g. 1.1.0).
+    validations:
+      required: true
+  - type: input
+    id: mc-version
+    attributes:
+      label: Minecraft version
+      description: e.g. 1.21.11
+    validations:
+      required: true
+  - type: input
+    id: loader
+    attributes:
+      label: Fabric Loader / Fabric API versions
+      description: e.g. Loader 0.19.5, API 0.141.6+1.21.11
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which playback mode were you using?
+      options:
+        - Spotify Web API (logged in through the browser)
+        - Native local fallback (media keys / MPRIS / osascript)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: |
+        Paste the relevant lines from `run/logs/latest.log` (dev) or
+        `.minecraft/logs/latest.log`. **Redact your Spotify Client ID and any tokens.**
+      render: text

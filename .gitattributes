@@ -1,0 +1,28 @@
+# Normalise all text files to LF in the repository.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF so cmd.exe parses them correctly.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell scripts must stay LF, otherwise the Gradle wrapper fails on Linux/macOS.
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Gradle wrapper and any other binary payloads must never be touched.
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ogg binary
+*.zip binary
+
+# Generated or vendored files: keep them out of diffs and language stats.
+gradle/wrapper/gradle-wrapper.jar binary linguist-vendored
+src/main/resources/assets/**/lang/*.json linguist-generated=false
+
+# Collapse generated noise in review diffs.
+build-out.txt -diff
+*.log -diff

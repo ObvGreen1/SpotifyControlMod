@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "spotifycontrol",
+  "version": "${version}",
+  "name": "Spotify Control",
+  "description": "Client-side Spotify controller: OAuth 2.0 PKCE Web API mode with a native OS media-session fallback, a fully configurable HUD overlay, keybinds, commands and Mod Menu integration.",
+  "authors": [
+    "ObvGreen"
+  ],
+  "contact": {
+    "homepage": "https://github.com/ObvGreen/SpotifyControlMod",
+    "sources": "https://github.com/ObvGreen/SpotifyControlMod",
+    "issues": "https://github.com/ObvGreen/SpotifyControlMod/issues"
+  },
+  "license": "MIT",
+  "icon": "assets/spotifycontrol/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "main": [
+      "me.obvgreen.spotifycontrol.SpotifyControlMod"
+    ],
+    "client": [
+      "me.obvgreen.spotifycontrol.client.SpotifyControlClient"
+    ],
+    "modmenu": [
+      "me.obvgreen.spotifycontrol.client.config.ModMenuIntegration"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.11",
+    "java": ">=21"
+  },
+  "suggests": {
+    "modmenu": ">=17.0.0",
+    "cloth-config": ">=21.11.0"
+  }
+}

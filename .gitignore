@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# Gradle
+# ---------------------------------------------------------------------------
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+build-out.txt
+
+# ---------------------------------------------------------------------------
+# Fabric Loom / Minecraft run directory (worlds, logs, options, cached assets)
+# ---------------------------------------------------------------------------
+/run/
+/runs/
+*.log
+last-instance.log
+/logs/
+
+# Crash reports
+crash-reports/
+hs_err_pid*.log
+replay_pid*.log
+
+# ---------------------------------------------------------------------------
+# IDE - IntelliJ IDEA
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Eclipse / VSCode
+.classpath
+.project
+.settings/
+.factorypath
+.vscode/
+bin/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+
+# ---------------------------------------------------------------------------
+# OS cruft
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+
+# ---------------------------------------------------------------------------
+# Mod runtime data that must never be committed
+# ---------------------------------------------------------------------------
+# Root-level only: the mod writes config/spotifycontrol.json here at runtime and
+# that file can hold OAuth tokens. The src/**/client/config/ package is source
+# code and must NOT be ignored, hence the leading slash.
+/config/
+/spotifycontrol.json
+*.token
