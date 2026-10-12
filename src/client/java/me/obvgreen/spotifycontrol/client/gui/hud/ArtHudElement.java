@@ -41,8 +41,13 @@ public final class ArtHudElement implements HudElementRenderer {
         }
         Identifier texture = context.albumArt();
         if (texture == null) {
+            // Placeholder: a visible tinted tile plus a note, so the box reads as "artwork pending"
+            // instead of a rendering bug.
             HudPainter.fillRounded(context.context(), 2, 2, width - 2, height - 2, radius,
-                    HudRenderContext.alpha(0xFFFFFFFF, 0.12F));
+                    HudRenderContext.alpha(0xFFFFFFFF, 0.22F));
+            int glyph = Math.max(8, Math.min(width, height) / 2);
+            HudPainter.noteGlyph(context.context(), (width - glyph) / 2, (height - glyph) / 2, glyph,
+                    HudRenderContext.alpha(0xFFFFFFFF, 0.55F));
         } else {
             // Standalone RGBA artwork, so the plain textured GUI pipeline is the correct one.
             context.context().drawTexture(RenderPipelines.GUI_TEXTURED, texture, 0, 0, 0.0F, 0.0F, width, height,

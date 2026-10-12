@@ -173,6 +173,31 @@ public final class ModConfig {
         }
     }
 
+    /** Which signal makes the ad skipper believe an advertisement is playing. */
+    public enum AdTrigger implements TranslatableOption {
+        UNKNOWN_ARTIST("Unknown artist", "spotifycontrol.config.ads.trigger.unknown"),
+        KEYWORDS("Ad keywords", "spotifycontrol.config.ads.trigger.keywords"),
+        EITHER("Unknown artist or keywords", "spotifycontrol.config.ads.trigger.either");
+
+        private final String displayName;
+        private final String translationKey;
+
+        AdTrigger(String displayName, String translationKey) {
+            this.displayName = displayName;
+            this.translationKey = translationKey;
+        }
+
+        @Override
+        public String displayName() {
+            return displayName;
+        }
+
+        @Override
+        public String translationKey() {
+            return translationKey;
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // HUD master switch and global defaults
     // ---------------------------------------------------------------------------------------------
@@ -276,6 +301,35 @@ public final class ModConfig {
     /** Persisted OAuth token bundle, {@code null} while logged out. */
     @Nullable
     public TokenSet tokens;
+
+    // ---------------------------------------------------------------------------------------------
+    // Ad skipping
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Master switch for the ad skipper. Spotify exposes no API to skip an advertisement, so the only
+     * available trick is restarting the desktop client, which drops the ad slot and resumes playback.
+     */
+    public boolean adSkipEnabled = false;
+    /** Which signal marks a snapshot as an advertisement. */
+    public AdTrigger adSkipTrigger = AdTrigger.UNKNOWN_ARTIST;
+    /** Comma/semicolon separated keywords matched against title, artist and album. */
+    public String adSkipKeywords = DEFAULT_AD_KEYWORDS;
+    /** Minimum seconds between two restarts, clamped to [15, 3600]. */
+    public int adSkipCooldownSeconds = 90;
+    /** Maximum restarts per rolling hour, clamped to [1, 30]. */
+    public int adSkipMaxPerHour = 10;
+    /** Grace period between killing and relaunching Spotify, clamped to [500, 15000]. */
+    public int adSkipRestartDelayMs = 4000;
+    /** Print a chat message whenever the skipper acts. */
+    public boolean adSkipNotify = true;
+    /** Press play after the relaunch when Spotify came back paused. */
+    public boolean adSkipResumePlayback = true;
+
+    /** Default keyword list; word-boundary matching keeps tracks like "Bad" or "Radio" safe. */
+    public static final String DEFAULT_AD_KEYWORDS =
+            "advertisement, advert, sponsored, werbung, publicite, publicidad, anuncio, "
+                    + "pubblicita, reklam, anzeige";
 
     // ---------------------------------------------------------------------------------------------
     // Debug
@@ -523,6 +577,16 @@ public final class ModConfig {
         redirectPort = Math.max(1024, Math.min(65535, redirectPort));
         pollIntervalSeconds = Math.max(1, Math.min(60, pollIntervalSeconds));
 
+        if (adSkipTrigger == null) {
+            adSkipTrigger = AdTrigger.UNKNOWN_ARTIST;
+        }
+        if (adSkipKeywords == null || adSkipKeywords.isBlank()) {
+            adSkipKeywords = DEFAULT_AD_KEYWORDS;
+        }
+        adSkipCooldownSeconds = clamp(adSkipCooldownSeconds, 15, 3600);
+        adSkipMaxPerHour = clamp(adSkipMaxPerHour, 1, 30);
+        adSkipRestartDelayMs = clamp(adSkipRestartDelayMs, 500, 15000);
+
         // Guarantee exactly one settings object per element type, in declaration order.
         List<HudElementSettings> normalisedElements = new ArrayList<>(HudElementType.values().length);
         for (HudElementType type : HudElementType.values()) {
@@ -551,6 +615,20 @@ public final class ModConfig {
             return fallback;
         }
         return ColorUtil.toHex(parsed);
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    /** @return the ad-skip cooldown in milliseconds. */
+    public long adSkipCooldownMillis() {
+        return Math.max(15, adSkipCooldownSeconds) * 1000L;
+    }
+
+    /** @return the delay between killing and relaunching Spotify, in milliseconds. */
+    public long adSkipRestartDelay() {
+        return Math.max(500, adSkipRestartDelayMs);
     }
 
     /** Lazily created Gson instance (pretty printing keeps hand-editing pleasant). */

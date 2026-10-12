@@ -13,6 +13,10 @@ import me.obvgreen.spotifycontrol.client.spotify.TrackInfo;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -84,6 +88,19 @@ public final class SpotifyControlClient implements ClientModInitializer {
             }
             // Lyrics lookups are keyed on the track identity, so the service dedupes normal ticks.
             lyrics.onTrack(track);
+        });
+        service.setNotifier(message -> {
+            // Arrives from the service worker, so chat delivery has to hop back to the client thread.
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client != null) {
+                client.execute(() -> {
+                    PlayerEntity player = client.player;
+                    if (player != null) {
+                        player.sendMessage(Text.literal("[Spotify] ").formatted(Formatting.GREEN)
+                                .append(Text.literal(message).formatted(Formatting.WHITE)), false);
+                    }
+                });
+            }
         });
         service.start();
 
@@ -172,6 +189,13 @@ public final class SpotifyControlClient implements ClientModInitializer {
     public static SpotifyHudOverlay hud() {
         SpotifyControlClient client = instance;
         return client == null ? null : client.hud;
+    }
+
+    /** @return the album art cache, or {@code null} before initialisation. */
+    @Nullable
+    public static AlbumArtCache albumArt() {
+        SpotifyControlClient client = instance;
+        return client == null ? null : client.artCache;
     }
 
     /** @return the lyrics service, or {@code null} before initialisation. */

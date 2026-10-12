@@ -5,6 +5,8 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -37,10 +39,23 @@ public final class SpotifyService {
     private static final Logger LOGGER = LoggerFactory.getLogger("SpotifyControl/Service");
     /** Minimum gap between two identical transport actions, protects against key repeat floods. */
     private static final long ACTION_THROTTLE_MS = 250L;
+    /** Rolling window used by the ad-skip rate limit. */
+    private static final long AD_SKIP_WINDOW_MS = 3_600_000L;
+    /** Time Spotify needs after a relaunch before its media session is usable again. */
+    private static final long AD_SKIP_RELAUNCH_GRACE_MS = 4_000L;
+    /** How long resume-after-restart keeps polling for the relaunched session. */
+    private static final long AD_SKIP_RESUME_WINDOW_MS = 20_000L;
+    /** Poll interval used while waiting for the relaunched session (and the zombie device to expire). */
+    private static final long AD_SKIP_RESUME_POLL_MS = 1_000L;
+    /** Per-attempt timeout for the resume transport action. */
+    private static final long AD_SKIP_RESUME_ACTION_TIMEOUT_MS = 3_000L;
+    /** Minimum gap between two "ad skip did nothing" log lines, so a stuck state cannot spam. */
+    private static final long AD_SKIP_NOTICE_INTERVAL_MS = 60_000L;
 
     private final ModConfig config;
     private final SpotifyWebApiClient webApi;
     private final SpotifyLocalController local;
+    private final SpotifyAppRestarter restarter = new SpotifyAppRestarter();
     private final ExecutorService worker;
     private final ScheduledExecutorService scheduler;
 
@@ -49,13 +64,22 @@ public final class SpotifyService {
     private final AtomicLong lastTrackChangeAt = new AtomicLong(0L);
     private final AtomicBoolean polling = new AtomicBoolean(false);
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
+    /** Guards against stacking restarts when several polls report the same advertisement. */
+    private final AtomicBoolean adSkipInFlight = new AtomicBoolean(false);
+    /** Timestamps of the recent ad-skip restarts, oldest first; guarded by {@link #adSkipHistoryLock}. */
+    private final Deque<Long> adSkipHistory = new ArrayDeque<>();
+    private final Object adSkipHistoryLock = new Object();
 
     private volatile TrackInfo current = TrackInfo.offlineSnapshot();
     private volatile SpotifyController active;
+    private volatile long lastAdSkipAt;
+    private volatile long lastAdSkipNoticeAt;
     @Nullable
     private volatile String lastActionError;
     @Nullable
     private volatile Consumer<TrackInfo> listener;
+    @Nullable
+    private volatile Consumer<String> notifier;
     @Nullable
     private volatile Future<?> pollTask;
     private volatile long lastPollAt;
@@ -127,6 +151,17 @@ public final class SpotifyService {
         }
     }
 
+    /**
+     * Registers the sink used for short user-facing notices (ad-skip activity).
+     *
+     * <p>The service deliberately keeps this as a plain consumer so the {@code spotify} package never
+     * has to reference Minecraft classes; the caller wraps chat delivery in
+     * {@code MinecraftClient.getInstance().execute(...)}.</p>
+     */
+    public void setNotifier(@Nullable Consumer<String> notifier) {
+        this.notifier = notifier;
+    }
+
     /** @return the most recent snapshot; never {@code null}. */
     public TrackInfo currentTrack() {
         return current;
@@ -167,6 +202,16 @@ public final class SpotifyService {
             builder.append(" - last action failed: ").append(error);
         }
         return builder.toString();
+    }
+
+    /**
+     * @return the failure recorded by the most recent control action, or {@code null} when the last
+     *         action succeeded. Callers that report command results read this right after dispatching,
+     *         before the next action clears it.
+     */
+    @Nullable
+    public String actionError() {
+        return lastActionError;
     }
 
     /** Clears the recorded action error (used by the config screen after a retry). */
@@ -262,6 +307,7 @@ public final class SpotifyService {
                     LOGGER.error("Track listener threw: {}", exception.toString());
                 }
             }
+            considerAdSkip(adjusted);
         }
     }
 
@@ -282,6 +328,236 @@ public final class SpotifyService {
             projected = snapshot.durationMs();
         }
         return snapshot.withProgress(projected, true);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Ad skipping
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Reacts to a freshly published snapshot that looks like an advertisement.
+     *
+     * <p>Spotify cannot skip ads through any API, so the only lever is closing and reopening the
+     * desktop client - the ad slot lives in the player session and does not survive that. The work is
+     * handed to the worker because killing and launching a process blocks, and the
+     * {@link #adSkipInFlight} gate makes sure a burst of polls (or the Web API and the native bridge
+     * agreeing on the same ad) still produces exactly one restart.</p>
+     */
+    private void considerAdSkip(TrackInfo snapshot) {
+        if (shuttingDown.get() || !config.adSkipEnabled) {
+            return;
+        }
+        if (!AdDetector.isAd(snapshot, config)) {
+            return;
+        }
+        if (!adSkipInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        executorRun(() -> {
+            try {
+                performAdSkip(false);
+            } finally {
+                adSkipInFlight.set(false);
+            }
+        });
+    }
+
+    /**
+     * Skips the advertisement that is playing right now.
+     *
+     * @param forced {@code true} for the manual "restart Spotify now" buttons, which ignore the
+     *               cooldown and the hourly budget but still record the restart
+     * @return {@code true} when the restart was actually started
+     */
+    private boolean performAdSkip(boolean forced) {
+        if (!restarter.supported()) {
+            noticeOnce("Ad skip: restarting Spotify is not supported on " + restarter.platform() + ".");
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (!forced) {
+            long cooldown = config.adSkipCooldownMillis();
+            long since = now - lastAdSkipAt;
+            if (lastAdSkipAt != 0L && since < cooldown) {
+                noticeOnce(String.format(Locale.ROOT,
+                        "Ad skip: cooling down for another %d s.", (cooldown - since + 999L) / 1000L));
+                return false;
+            }
+            int max = config.adSkipMaxPerHour;
+            int used = skipsInLastHour(now);
+            if (used >= max) {
+                noticeOnce(String.format(Locale.ROOT,
+                        "Ad skip: hourly limit reached (%d/%d).", used, max));
+                return false;
+            }
+        }
+        if (!restarter.isClientRunning()) {
+            // Playback is on another device (phone, speaker, web player): there is nothing to restart.
+            noticeOnce("Ad skip: no local Spotify client to restart.");
+            return false;
+        }
+
+        recordAdSkip(now);
+        lastAdSkipAt = now;
+        TrackInfo ad = current;
+        LOGGER.info("Ad skip: advertisement detected ('{}' / '{}'); restarting Spotify.", ad.title(),
+                ad.artist());
+        notifyUser("Ad detected, restarting Spotify...");
+
+        if (!restarter.restart(config.adSkipRestartDelay())) {
+            noticeOnce("Ad skip: Spotify could not be restarted; see the log for details.");
+            return false;
+        }
+
+        // Give the new process time to register its media session, then re-read the player state.
+        sleep(AD_SKIP_RELAUNCH_GRACE_MS);
+        refreshInline();
+
+        if (config.adSkipResumePlayback) {
+            resumeAfterRestart();
+        }
+        notifyUser("Ad skipped via Spotify restart.");
+        return true;
+    }
+
+    /**
+     * Resumes playback after a forced restart.
+     *
+     * <p>A straight "press play once" does not work here for two reasons:</p>
+     *
+     * <ol>
+     *   <li>The Web API keeps reporting the dead session for a while after the client is killed, and
+     *       that stale snapshot usually says {@code is_playing = true}, so a single state check
+     *       wrongly concludes the client auto-resumed and never presses play.</li>
+     *   <li>The native bridge's media key is a <i>toggle</i>: pressing it while Spotify actually did
+     *       auto-resume would pause the track again.</li>
+     * </ol>
+     *
+     * <p>So this polls until the newly relaunched session appears, and while it looks paused it
+     * re-issues the Web API {@code play} (which is idempotent - a no-op on an already playing
+     * session, so repeating it is safe). The native toggle key is only pressed as a last resort
+     * when there is no Web API session at all, exactly once.</p>
+     */
+    private void resumeAfterRestart() {
+        long deadline = System.currentTimeMillis() + AD_SKIP_RESUME_WINDOW_MS;
+        while (!shuttingDown.get() && System.currentTimeMillis() < deadline) {
+            sleep(AD_SKIP_RESUME_POLL_MS);
+            refreshInline();
+            TrackInfo after = current;
+            if (after.offline() || after.advertisement()) {
+                // The relaunched client is not visible from the API yet (reconnecting, zombie device
+                // still expiring) - keep polling.
+                continue;
+            }
+            if (after.isPlaying()) {
+                // Spotify came back playing by itself; nothing to do. Reaching this point with the
+                // Web API active also proves the zombie session has expired.
+                return;
+            }
+            if (webApi.isAuthenticated()) {
+                // Resumable and paused. Web API play never toggles, so repeating it is harmless.
+                await(webApi.play(), AD_SKIP_RESUME_ACTION_TIMEOUT_MS);
+                continue;
+            }
+            // No Web API session: fall back to the native media key. It is a toggle, so press it
+            // exactly once and stop - re-checking would risk toggling a session that did resume.
+            if (local.isAvailable()) {
+                await(local.play(), AD_SKIP_RESUME_ACTION_TIMEOUT_MS);
+            }
+            return;
+        }
+        // The whole window elapsed without the session becoming playable.
+        LOGGER.info("Ad skip: Spotify did not resume within {} ms; leaving it paused.",
+                AD_SKIP_RESUME_WINDOW_MS);
+    }
+
+    /**
+     * Restarts Spotify on demand, used by {@code /spotify adskip now} and the config screen button.
+     *
+     * @return {@code true} when the restart was queued
+     */
+    public boolean restartSpotifyNow() {
+        if (shuttingDown.get()) {
+            return false;
+        }
+        if (!adSkipInFlight.compareAndSet(false, true)) {
+            return false;
+        }
+        executorRun(() -> {
+            try {
+                performAdSkip(true);
+            } finally {
+                adSkipInFlight.set(false);
+            }
+        });
+        return true;
+    }
+
+    /** @return {@code true} while an ad-skip restart is queued or running. */
+    public boolean isAdSkipInFlight() {
+        return adSkipInFlight.get();
+    }
+
+    /** @return a one-line summary of the ad-skip configuration and usage, for {@code /spotify adskip}. */
+    public String adSkipStatus() {
+        StringBuilder builder = new StringBuilder();
+        builder.append(config.adSkipEnabled ? "enabled" : "disabled");
+        if (!restarter.supported()) {
+            builder.append(" (restart unsupported on ").append(restarter.platform()).append(')');
+        }
+        builder.append(" - trigger: ").append(config.adSkipTrigger.displayName());
+        builder.append(" - cooldown: ").append(config.adSkipCooldownSeconds).append('s');
+        builder.append(" - restarts this hour: ").append(skipsInLastHour(System.currentTimeMillis()))
+                .append('/').append(config.adSkipMaxPerHour);
+        if (adSkipInFlight.get()) {
+            builder.append(" - restart in progress");
+        }
+        return builder.toString();
+    }
+
+    private int skipsInLastHour(long now) {
+        long cutoff = now - AD_SKIP_WINDOW_MS;
+        synchronized (adSkipHistoryLock) {
+            while (!adSkipHistory.isEmpty() && adSkipHistory.peekFirst() < cutoff) {
+                adSkipHistory.pollFirst();
+            }
+            return adSkipHistory.size();
+        }
+    }
+
+    private void recordAdSkip(long now) {
+        long cutoff = now - AD_SKIP_WINDOW_MS;
+        synchronized (adSkipHistoryLock) {
+            adSkipHistory.addLast(now);
+            while (!adSkipHistory.isEmpty() && adSkipHistory.peekFirst() < cutoff) {
+                adSkipHistory.pollFirst();
+            }
+        }
+    }
+
+    /** Logs an ad-skip explanation at most once a minute, so a stuck state cannot flood the log. */
+    private void noticeOnce(String message) {
+        long now = System.currentTimeMillis();
+        if (now - lastAdSkipNoticeAt < AD_SKIP_NOTICE_INTERVAL_MS) {
+            return;
+        }
+        lastAdSkipNoticeAt = now;
+        LOGGER.info(message);
+    }
+
+    private void notifyUser(String message) {
+        if (!config.adSkipNotify) {
+            return;
+        }
+        Consumer<String> sink = notifier;
+        if (sink == null) {
+            return;
+        }
+        try {
+            sink.accept(message);
+        } catch (RuntimeException exception) {
+            LOGGER.debug("Ad-skip notifier threw: {}", exception.toString());
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -339,6 +615,108 @@ public final class SpotifyService {
             return;
         }
         dispatch("repeat", controller.setRepeatMode(mode).thenApply(applied -> applied != null), null);
+    }
+
+    /** Turns shuffle on or off on the active backend. */
+    public void setShuffle(boolean enabled) {
+        SpotifyController controller = active;
+        if (!controller.canControlShuffle()) {
+            lastActionError = "shuffle control is not available on backend '" + controller.id() + "'";
+            LOGGER.info("Shuffle change ignored: '{}' cannot toggle shuffle.", controller.id());
+            return;
+        }
+        dispatch("shuffle", controller.setShuffle(enabled), null);
+    }
+
+    /** Flips the shuffle state. */
+    public void toggleShuffle() {
+        setShuffle(!shuffleEnabled());
+    }
+
+    /** {@code true} when the active backend can toggle shuffle. */
+    public boolean canControlShuffle() {
+        return active.canControlShuffle();
+    }
+
+    /** @return the best known shuffle state for the active backend. */
+    public boolean shuffleEnabled() {
+        return active.shuffleState();
+    }
+
+    /**
+     * Sets the absolute playback volume.
+     *
+     * <p>{@code percent} is clamped to the active backend's ceiling. Values above 100 are only real
+     * where the OS mixer allows amplification (Linux sink input volume); the Spotify Web API and the
+     * Windows per-application mixer stop at 100 %.</p>
+     */
+    public void setVolume(int percent) {
+        SpotifyController controller = active;
+        if (!controller.canControlVolume()) {
+            lastActionError = "volume control is not available on backend '" + controller.id() + "'";
+            LOGGER.info("Volume change ignored: '{}' cannot change the volume.", controller.id());
+            return;
+        }
+        int clamped = Math.max(0, Math.min(controller.maxVolumePercent(), percent));
+        dispatch("volume", controller.setVolume(clamped), null);
+    }
+
+    /** {@code true} when the active backend can change the volume. */
+    public boolean canControlVolume() {
+        return active.canControlVolume();
+    }
+
+    /** @return the highest gain the active backend can apply ({@code 100} without amplification). */
+    public int maxVolumePercent() {
+        return active.maxVolumePercent();
+    }
+
+    /** @return last known volume in percent, or {@code -1} while unknown. */
+    public int volumePercent() {
+        return active.volumePercent();
+    }
+
+    /**
+     * Re-reads the volume in the background so a freshly opened GUI shows the real value.
+     *
+     * <p>Does nothing when the active backend cannot control the volume; the read itself never
+     * touches the caller's thread.</p>
+     */
+    public void refreshVolume() {
+        if (!canControlVolume()) {
+            return;
+        }
+        executorRun(() -> active.refreshVolume());
+    }
+
+    /**
+     * Jumps to an absolute position inside the current track.
+     *
+     * <p>The snapshot is moved immediately so the HUD and the GUI do not snap back to the old
+     * position while the seek is in flight.</p>
+     */
+    public void seek(long positionMs) {
+        SpotifyController controller = active;
+        if (!controller.canControlSeek()) {
+            lastActionError = "seeking is not available on backend '" + controller.id() + "'";
+            LOGGER.info("Seek ignored: '{}' cannot seek.", controller.id());
+            return;
+        }
+        TrackInfo snapshot = current;
+        long target = Math.max(0L, positionMs);
+        if (snapshot.hasDuration()) {
+            target = Math.min(target, snapshot.durationMs());
+        }
+        long clamped = target;
+        dispatch("seek", controller.seek(clamped), () -> executorRun(() -> {
+            TrackInfo latest = current;
+            publish(latest.withProgress(clamped, latest.isPlaying()));
+        }));
+    }
+
+    /** {@code true} when the active backend can seek inside the current track. */
+    public boolean canControlSeek() {
+        return active.canControlSeek();
     }
 
     private void markTrackChange() {
@@ -400,6 +778,19 @@ public final class SpotifyService {
             Thread.sleep(millis);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Blocks the calling (worker) thread on the transport action and reports its outcome. */
+    private static boolean await(CompletableFuture<Boolean> future, long timeoutMs) {
+        if (future == null) {
+            return false;
+        }
+        try {
+            return Boolean.TRUE.equals(future.get(timeoutMs, TimeUnit.MILLISECONDS));
+        } catch (Exception exception) {
+            LOGGER.debug("Ad-skip resume action failed: {}", exception.toString());
+            return false;
         }
     }
 

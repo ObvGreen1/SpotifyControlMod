@@ -29,8 +29,10 @@ License - MIT                           Current version - 1.1.0
 | Actions | `playPause()`, `nextTrack()`, `previousTrack()`, `toggleRepeat()`, `getCurrentlyPlayingTrack()` |
 | HUD | Five element types — **card, art, progress, lyrics, mini** — each with anchor, X/Y offsets, scale, background opacity, text colour, text shadow, and marquee scrolling |
 | Lyrics | Synchronised lyrics fetched from [LRCLIB](https://lrclib.net/), parsed LRC, rendered as a scrolling HUD element |
-| Keybinds | Play/Pause, Next, Previous, Toggle Repeat, Toggle HUD — category `key.category.spotifycontrol` |
-| Commands | `/spotify play\|pause\|toggle\|next\|skip\|prev\|repeat\|hud\|status` |
+| Keybinds | Play/Pause, Next, Previous, Toggle Repeat, Toggle HUD, Toggle HUD Lyrics, Open Menu — category `key.category.spotifycontrol` |
+| GUI | `/spotify menu` or the Open Menu keybind: transport, seek scrubber, volume, repeat, shuffle, ad-skip, lyrics, settings, account |
+| Commands | `/spotify play\|pause\|toggle\|next\|skip\|prev\|repeat\|hud\|status` and `/spotify adskip [on\|off\|toggle\|now]` |
+| Ad skipping | Closes and reopens the Spotify desktop app when a track looks like an advertisement (unknown artist, explicit `currently_playing_type = "ad"` from the Web API, or configurable keywords), with cooldown + per-hour limits and optional chat notifications — off by default |
 | Config | Mod Menu → Cloth Config screen (`config/spotifycontrol.json`) |
 
 ## Installation
@@ -90,17 +92,49 @@ session instead:
 If nothing is reachable the HUD shows *Spotify Offline* and every action degrades to a logged no-op
 instead of throwing.
 
+## Ad skipping
+
+Spotify exposes **no API to skip an advertisement**, so the mod uses the only lever that exists:
+closing and reopening the Spotify desktop client, which drops the ad slot and resumes playback where
+the track list left off. The feature is **off by default** and lives in
+*Mod Menu → Spotify Control → Ad Skipping* (or `/spotify adskip`).
+
+A track is treated as an ad when:
+
+1. the Web API reports `currently_playing_type = "ad"` (always trusted), or
+2. the artist is unknown/"Unknown Artist" (normal for ad slots; also true for podcast episodes and
+   local files — hence the rate limits), or
+3. the title/artist/album contains one of the configured **ad keywords** (whole-word matching, so
+   tracks like "Radio" or "Bad" are safe).
+
+Safety rails: a configurable **cooldown** between restarts, a **per-hour restart cap**, a restart
+**delay**, and an aborted restart when no local Spotify process exists (playback on a phone or
+speaker is left alone). When Spotify comes back paused you can have the mod press play again.
+
 ## Commands
 
 ```
 /spotify                     Show status
+/spotify menu|gui            Open the control console GUI   (same as the Open Menu keybind)
 /spotify play|pause|toggle   Transport
 /spotify next|skip           Next track
 /spotify prev|previous       Previous track
 /spotify repeat <mode>       off | all | one   (aliases: none | context | track)
+/spotify shuffle [on|off]    Shuffle state (bare: report)
+/spotify volume              Report current volume
+/spotify volume <percent>    Set volume, 0-200 (past 100 only where the OS allows it)
+/spotify seek <seconds>      Jump inside the current track
 /spotify hud [toggle|on|off] HUD visibility
-/spotify status              Detailed status
+/spotify adskip             Ad-skip status
+/spotify adskip on|off      Enable / disable ad skipping
+/spotify adskip toggle      Flip ad skipping
+/spotify adskip now         Restart Spotify immediately
+/spotify status             Detailed status
 ```
+
+The console GUI covers the same ground without typing: transport, track position scrubber,
+volume (with the backend's honest maximum), repeat, shuffle, ad-skip, lyrics and settings, plus
+Spotify account login/logout when the Web API is configured.
 
 ## Threading
 
@@ -117,6 +151,7 @@ snapshot that is replaced wholesale.
 | HUD shows *Spotify Offline* | Not logged in **and** no local media session. Log in through the config screen, or make sure Spotify/your media player is playing. |
 | Login toggle does nothing | Redirect URI mismatch: the port in the Spotify dashboard must equal the one in the config screen. Check `logs/latest.log`. |
 | `repeat` command ignored | Repeat is only controllable through the Web API path (native fallback cannot set repeat mode). |
+| Ad skipping never triggers | Restart requires a **local** Spotify process; playback on a phone/speaker/web player is left alone. Check the trigger setting and that the track really is playing (ads that are paused don't count). |
 | No album art | Art cache is empty or the URL provider failed; check that the mod can reach the internet (proxy on this machine? see [CONTRIBUTING.md](CONTRIBUTING.md)). |
 | Build fails with proxy errors | The project itself defines no proxy; your machine-level Gradle proxy (`~/.gradle/gradle.properties`) applies. |
 | Mod Menu screen missing | Mod Menu or Cloth Config not installed; Cloth Config is Jar-in-Jar bundled, Mod Menu is not. |
@@ -141,8 +176,10 @@ src/client/java/me/obvgreen/spotifycontrol/client/
     spotify/SpotifyController.java          controller interface
     spotify/SpotifyWebApiClient.java        OAuth PKCE + Web API client
     spotify/SpotifyLocalController.java     native OS media bridge
-    spotify/SpotifyService.java             facade, polling, interpolation
+    spotify/SpotifyService.java             facade, polling, interpolation, ad skipping
     spotify/NullSpotifyController.java      inert fallback
+    spotify/AdDetector.java                 ad-slot heuristics (unknown artist / keywords)
+    spotify/SpotifyAppRestarter.java        close + relaunch the desktop client
     spotify/RepeatMode.java                 OFF / CONTEXT / TRACK
     spotify/TrackInfo.java                  immutable track snapshot
 ```

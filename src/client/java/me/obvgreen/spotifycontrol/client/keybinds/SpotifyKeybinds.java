@@ -2,9 +2,11 @@ package me.obvgreen.spotifycontrol.client.keybinds;
 
 import me.obvgreen.spotifycontrol.client.SpotifyControlClient;
 import me.obvgreen.spotifycontrol.client.config.ModConfig;
+import me.obvgreen.spotifycontrol.client.gui.SpotifyGuiScreen;
 import me.obvgreen.spotifycontrol.client.spotify.SpotifyService;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.util.Identifier;
@@ -45,6 +47,7 @@ public final class SpotifyKeybinds {
     private KeyBinding repeatKey;
     private KeyBinding toggleHudKey;
     private KeyBinding toggleLyricsKey;
+    private KeyBinding openMenuKey;
 
     public SpotifyKeybinds(SpotifyService service, ModConfig config) {
         this.service = service;
@@ -59,6 +62,7 @@ public final class SpotifyKeybinds {
         repeatKey = register("key.spotifycontrol.toggle_repeat", GLFW.GLFW_KEY_UNKNOWN);
         toggleHudKey = register("key.spotifycontrol.toggle_hud", GLFW.GLFW_KEY_UNKNOWN);
         toggleLyricsKey = register("key.spotifycontrol.toggle_lyrics", GLFW.GLFW_KEY_UNKNOWN);
+        openMenuKey = register("key.spotifycontrol.open_menu", GLFW.GLFW_KEY_UNKNOWN);
         ClientTickEvents.END_CLIENT_TICK.register(client -> poll());
         LOGGER.info("Registered Spotify Control keybinds under category '{}'.", CATEGORY);
     }
@@ -94,6 +98,18 @@ public final class SpotifyKeybinds {
         while (toggleLyricsKey.wasPressed()) {
             toggleLyrics();
         }
+        while (openMenuKey.wasPressed()) {
+            openMenu();
+        }
+    }
+
+    /**
+     * Opens the control console. The keybind poll already runs on the client thread, which is where
+     * {@code setScreen} has to happen, so no scheduling is needed here.
+     */
+    private void openMenu() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        SpotifyGuiScreen.open(client.currentScreen);
     }
 
     private void toggleHud() {
@@ -138,8 +154,14 @@ public final class SpotifyKeybinds {
         return repeatKey;
     }
 
+    /** @return the keybind that opens the control console. */
+    public KeyBinding openMenuKey() {
+        return openMenuKey;
+    }
+
     /** @return every binding in display order. */
     public KeyBinding[] all() {
-        return new KeyBinding[]{playPauseKey, nextKey, previousKey, repeatKey, toggleHudKey, toggleLyricsKey};
+        return new KeyBinding[]{playPauseKey, nextKey, previousKey, repeatKey, openMenuKey,
+                toggleHudKey, toggleLyricsKey};
     }
 }

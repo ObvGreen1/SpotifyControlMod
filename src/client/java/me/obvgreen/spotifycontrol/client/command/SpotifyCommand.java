@@ -8,6 +8,7 @@ import com.mojang.brigadier.context.CommandContext;
 import me.obvgreen.spotifycontrol.client.SpotifyControlClient;
 import me.obvgreen.spotifycontrol.client.config.HudElementType;
 import me.obvgreen.spotifycontrol.client.config.ModConfig;
+import me.obvgreen.spotifycontrol.client.gui.SpotifyGuiScreen;
 import me.obvgreen.spotifycontrol.client.gui.hud.HudLayout;
 import me.obvgreen.spotifycontrol.client.lyrics.LyricsService;
 import me.obvgreen.spotifycontrol.client.spotify.RepeatMode;
@@ -34,9 +35,14 @@ import java.util.Locale;
  *
  * <pre>
  * /spotify play|pause|toggle|next|skip|prev|repeat [off|all|one]|auth [login|logout]|hud toggle|status
+ * /spotify adskip [on|off|toggle|now]
  * </pre>
  */
 public final class SpotifyCommand {
+
+    /** Shown when the console cannot be opened because the client service is not up yet. */
+    private static final String CONSOLE_UNAVAILABLE =
+            "The Spotify console is not available yet; try again in a moment.";
 
     private static final Logger LOGGER = LoggerFactory.getLogger("SpotifyControl/Command");
 
@@ -96,6 +102,11 @@ public final class SpotifyCommand {
                     }))
                     .then(buildRepeat())
                     .then(buildAuth())
+                    .then(buildMenu())
+                    .then(ClientCommandManager.literal("gui").executes(this::openMenu))
+                    .then(buildShuffle())
+                    .then(buildVolume())
+                    .then(buildSeek())
                     .then(ClientCommandManager.literal("hud")
                             .executes(context -> {
                                 toggleHud(context);
@@ -115,6 +126,7 @@ public final class SpotifyCommand {
                             }))
                             .then(buildHudElement()))
                     .then(buildLyrics())
+                    .then(buildAdSkip())
                     .then(ClientCommandManager.literal("status").executes(context -> {
                         status(context);
                         return 1;
@@ -122,6 +134,173 @@ public final class SpotifyCommand {
             dispatcher.register(root);
         });
         LOGGER.info("Registered /{} client command.", ROOT);
+    }
+
+    /**
+     * {@code /spotify menu} (aliases {@code /spotify gui} and {@code /spotify menu gui}) opens the
+     * in-game control screen.
+     *
+     * <p>The bare {@code /spotify} root keeps printing the status line, so the console always has an
+     * explicit entry point; the screen itself is a thin front end over the same service calls the
+     * other subcommands use.</p>
+     */
+    private LiteralArgumentBuilder<FabricClientCommandSource> buildMenu() {
+        return ClientCommandManager.literal("menu")
+                .executes(this::openMenu)
+                .then(ClientCommandManager.literal("gui").executes(this::openMenu));
+    }
+
+    /**
+     * Queues the console screen for the next client tick.
+     *
+     * <p>{@code ChatScreen} closes itself right after the command it sent returns, and that close
+     * replaces whatever screen the command set. Setting the console inline therefore flashed and
+     * vanished: the chat closed and nothing else appeared. Queueing the open on the client executor
+     * runs it once the chat screen is really gone, so the panel stays up. The parent screen is read
+     * at that later point, not now, because the chat is still the current screen here.</p>
+     */
+    private int openMenu(CommandContext<FabricClientCommandSource> context) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (SpotifyControlClient.service() == null) {
+            error(context, CONSOLE_UNAVAILABLE);
+            return 0;
+        }
+        FabricClientCommandSource source = context.getSource();
+        client.execute(() -> {
+            if (!SpotifyGuiScreen.open(client.currentScreen)) {
+                source.sendError(Text.literal(CONSOLE_UNAVAILABLE).formatted(Formatting.RED));
+            }
+        });
+        return 1;
+    }
+
+    /** {@code /spotify shuffle [on|off|toggle]} - reports the state when called bare. */
+    private LiteralArgumentBuilder<FabricClientCommandSource> buildShuffle() {
+        return ClientCommandManager.literal("shuffle")
+                .executes(context -> {
+                    reportShuffle(context);
+                    return 1;
+                })
+                .then(ClientCommandManager.literal("on").executes(context -> {
+                    setShuffle(context, true);
+                    return 1;
+                }))
+                .then(ClientCommandManager.literal("off").executes(context -> {
+                    setShuffle(context, false);
+                    return 1;
+                }))
+                .then(ClientCommandManager.literal("toggle").executes(context -> {
+                    setShuffle(context, !service.shuffleEnabled());
+                    return 1;
+                }));
+    }
+
+    private void reportShuffle(CommandContext<FabricClientCommandSource> context) {
+        if (!service.canControlShuffle()) {
+            error(context, "Shuffle control is not available on the '"
+                    + service.activeController().id() + "' backend.");
+            return;
+        }
+        feedback(context, "Shuffle is " + (service.shuffleEnabled() ? "on" : "off") + ".");
+    }
+
+    private void setShuffle(CommandContext<FabricClientCommandSource> context, boolean enabled) {
+        service.setShuffle(enabled);
+        if (service.actionError() == null) {
+            feedback(context, "Shuffle set to " + (enabled ? "on" : "off") + ".");
+        } else {
+            error(context, service.actionError());
+        }
+    }
+
+    /** {@code /spotify volume <0-200>} and {@code /spotify volume} to report the current level. */
+    private LiteralArgumentBuilder<FabricClientCommandSource> buildVolume() {
+        return ClientCommandManager.literal("volume")
+                .executes(context -> {
+                    if (!service.canControlVolume()) {
+                        error(context, "Volume control is not available on the '"
+                                + service.activeController().id() + "' backend.");
+                        return 1;
+                    }
+                    int current = service.volumePercent();
+                    feedback(context, current < 0
+                            ? "Volume is unknown (max " + service.maxVolumePercent() + "%)."
+                            : "Volume is " + current + "% (max " + service.maxVolumePercent() + "%).");
+                    return 1;
+                })
+                .then(ClientCommandManager.argument("percent", IntegerArgumentType.integer(0, 200))
+                        .executes(context -> {
+                            int percent = IntegerArgumentType.getInteger(context, "percent");
+                            service.setVolume(percent);
+                            if (service.actionError() == null) {
+                                int applied = service.volumePercent();
+                                feedback(context, applied < 0
+                                        ? "Volume set to " + percent + "%."
+                                        : "Volume is now " + applied
+                                        + "% (max " + service.maxVolumePercent() + "%).");
+                            } else {
+                                error(context, service.actionError());
+                            }
+                            return 1;
+                        }));
+    }
+
+    /** {@code /spotify seek <seconds>} jumps to an absolute position in the current track. */
+    private LiteralArgumentBuilder<FabricClientCommandSource> buildSeek() {
+        return ClientCommandManager.literal("seek")
+                .executes(context -> {
+                    error(context, "Usage: /spotify seek <seconds>");
+                    return 1;
+                })
+                .then(ClientCommandManager.argument("seconds", IntegerArgumentType.integer(0, 86400))
+                        .executes(context -> {
+                            int seconds = IntegerArgumentType.getInteger(context, "seconds");
+                            service.seek(seconds * 1000L);
+                            if (service.actionError() == null) {
+                                feedback(context, "Seeking to " + seconds + "s.");
+                            } else {
+                                error(context, service.actionError());
+                            }
+                            return 1;
+                        }));
+    }
+
+    /**
+     * {@code /spotify adskip} reports the current state, {@code on}/{@code off}/{@code toggle} flip
+     * the feature and {@code now} restarts Spotify immediately.
+     */
+    private LiteralArgumentBuilder<FabricClientCommandSource> buildAdSkip() {
+        return ClientCommandManager.literal("adskip")
+                .executes(context -> {
+                    feedback(context, "Ad skip: " + service.adSkipStatus());
+                    return 1;
+                })
+                .then(ClientCommandManager.literal("on").executes(context -> {
+                    config.adSkipEnabled = true;
+                    SpotifyControlClient.persistConfig();
+                    feedback(context, "Ad skip enabled - unknown-artist tracks will restart Spotify");
+                    return 1;
+                }))
+                .then(ClientCommandManager.literal("off").executes(context -> {
+                    config.adSkipEnabled = false;
+                    SpotifyControlClient.persistConfig();
+                    feedback(context, "Ad skip disabled");
+                    return 1;
+                }))
+                .then(ClientCommandManager.literal("toggle").executes(context -> {
+                    config.adSkipEnabled = !config.adSkipEnabled;
+                    SpotifyControlClient.persistConfig();
+                    feedback(context, "Ad skip " + (config.adSkipEnabled ? "enabled" : "disabled"));
+                    return 1;
+                }))
+                .then(ClientCommandManager.literal("now").executes(context -> {
+                    if (service.restartSpotifyNow()) {
+                        feedback(context, "Restarting Spotify now");
+                    } else {
+                        feedback(context, "Restart already in progress");
+                    }
+                    return 1;
+                }));
     }
 
     private LiteralArgumentBuilder<FabricClientCommandSource> buildRepeat() {

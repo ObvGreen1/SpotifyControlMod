@@ -180,6 +180,33 @@ public final class AlbumArtCache {
     /** Reads the artwork from the disk cache, falling back to a network download. */
     @Nullable
     private byte[] load(String url) {
+        // Artwork that is already a local file (the Windows SMTC bridge writes the session
+        // thumbnail to %LOCALAPPDATA%\spotifycontrol-art) is read straight from disk: there is
+        // nothing to cache and nothing to download.
+        Path local = localFile(url);
+        if (local != null) {
+            try {
+                if (!Files.isRegularFile(local)) {
+                    LOGGER.debug("Local artwork {} is not on disk.", local);
+                    return null;
+                }
+                long size = Files.size(local);
+                if (size <= 0 || size > MAX_IMAGE_BYTES) {
+                    LOGGER.warn("Local artwork {} is {} bytes, refusing to decode it.", local, size);
+                    return null;
+                }
+                byte[] bytes = Files.readAllBytes(local);
+                if (!looksLikeImage(bytes)) {
+                    LOGGER.warn("Local artwork {} does not start with a known image signature.", local);
+                    return null;
+                }
+                return bytes;
+            } catch (IOException exception) {
+                LOGGER.warn("Local artwork {} unreadable: {}", local, exception.toString());
+                return null;
+            }
+        }
+
         Path cached = cacheFile(url);
         if (cached != null && Files.isRegularFile(cached)) {
             try {
@@ -192,6 +219,12 @@ public final class AlbumArtCache {
             } catch (IOException exception) {
                 LOGGER.debug("Cached artwork {} unreadable: {}", cached, exception.toString());
             }
+        }
+
+        String lower = url.trim().toLowerCase(Locale.ROOT);
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+            LOGGER.debug("Artwork reference {} is neither remote nor a local file; ignoring.", url);
+            return null;
         }
 
         try {
@@ -240,6 +273,33 @@ public final class AlbumArtCache {
             LOGGER.warn("Album art download for {} failed: {}", url, exception.toString());
             return null;
         }
+    }
+
+    /**
+     * Resolves an artwork reference that points at the local filesystem, or {@code null} when it is a
+     * remote URL.
+     *
+     * <p>Accepted forms are {@code file:///C:/...}, {@code file:/C:/...} and a bare absolute path. The
+     * Windows SMTC bridge hands the session thumbnail over as a {@code file:///} URL, so this is the
+     * normal path for local playback.</p>
+     */
+    @Nullable
+    private static Path localFile(String url) {
+        String trimmed = url.trim();
+        if (trimmed.regionMatches(true, 0, "file:", 0, 5)) {
+            try {
+                return Path.of(URI.create(trimmed.replace(" ", "%20")));
+            } catch (RuntimeException exception) {
+                LOGGER.warn("Artwork reference {} is not a usable file URL: {}", url,
+                        exception.toString());
+                return null;
+            }
+        }
+        // A Windows drive letter or a POSIX absolute path: no scheme, so it is a plain path.
+        if (trimmed.matches("^[A-Za-z]:[\\\\/].*") || trimmed.startsWith("\\\\")) {
+            return Path.of(trimmed);
+        }
+        return null;
     }
 
     private static boolean looksLikeImage(byte[] body) {

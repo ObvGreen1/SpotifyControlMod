@@ -117,7 +117,10 @@ public final class CardHudElement implements HudElementRenderer {
         int border = HudRenderContext.alpha(0xFFFFFFFF, 0.25F);
         if (texture == null) {
             HudPainter.fillRounded(context.context(), left, top, left + ART_SIZE, top + ART_SIZE,
-                    Math.min(3, ART_SIZE / 4), HudRenderContext.alpha(0xFFFFFFFF, 0.10F));
+                    Math.min(3, ART_SIZE / 4), HudRenderContext.alpha(0xFFFFFFFF, 0.22F));
+            int glyph = Math.max(8, ART_SIZE / 2);
+            HudPainter.noteGlyph(context.context(), left + (ART_SIZE - glyph) / 2, top + (ART_SIZE - glyph) / 2,
+                    glyph, HudRenderContext.alpha(0xFFFFFFFF, 0.55F));
         } else {
             // DrawContext#drawTexture needs an explicit pipeline; standalone RGBA art uses GUI_TEXTURED.
             context.context().drawTexture(RenderPipelines.GUI_TEXTURED, texture, left, top, 0.0F, 0.0F,

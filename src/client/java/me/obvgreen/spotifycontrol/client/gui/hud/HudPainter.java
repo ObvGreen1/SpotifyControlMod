@@ -166,6 +166,26 @@ public final class HudPainter {
         context.fill(x + 4, y, x + 6, y + 6, color);
     }
 
+    /**
+     * Draws the placeholder musical note used wherever album artwork is missing or still loading.
+     *
+     * <p>Drawn from rectangles rather than a font glyph so it scales with {@code size} and never
+     * depends on the active resource pack.</p>
+     */
+    public static void noteGlyph(DrawContext context, int x, int y, int size, int color) {
+        if (size < 6 || ColorUtil.alpha(color) == 0) {
+            return;
+        }
+        int head = Math.max(3, size / 3);
+        int stem = Math.max(1, size / 10);
+        int bottom = y + size;
+        // Note head, then a stem up the right hand side and a short flag.
+        fillRounded(context, x, bottom - head, x + head + 1, bottom, Math.max(1, head / 2), color);
+        context.fill(x + head, bottom - head - (size - head), x + head + stem, bottom - head / 2, color);
+        context.fill(x + head + stem, bottom - head - (size - head), x + head + stem + size / 4,
+                bottom - head - (size - head) + stem, color);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Text
     // ---------------------------------------------------------------------------------------------

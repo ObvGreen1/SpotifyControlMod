@@ -17,6 +17,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ConfirmLinkScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +48,19 @@ public final class ModMenuIntegration implements ModMenuApi {
         return this::buildScreen;
     }
 
+    /**
+     * Builds the Cloth Config screen for the given parent.
+     *
+     * <p>Exposed so the in-game console ({@code SpotifyGuiScreen}) can open the settings without
+     * going through Mod Menu.</p>
+     *
+     * @param parent screen to return to, may be {@code null}
+     * @return a freshly built configuration screen
+     */
+    public static Screen screen(@Nullable Screen parent) {
+        return new ModMenuIntegration().buildScreen(parent);
+    }
+
     private Screen buildScreen(Screen parent) {
         ModConfig config = SpotifyControlClient.configOrLoad();
         config.normalise();
@@ -64,6 +78,8 @@ public final class ModMenuIntegration implements ModMenuApi {
                 Text.translatable("spotifycontrol.config.category.elements")), entries, config);
         buildLyricsCategory(builder.getOrCreateCategory(
                 Text.translatable("spotifycontrol.config.category.lyrics")), entries, config);
+        buildAdsCategory(builder.getOrCreateCategory(
+                Text.translatable("spotifycontrol.config.category.ads")), entries, config);
         buildApiCategory(builder.getOrCreateCategory(
                 Text.translatable("spotifycontrol.config.category.api")), entries, config);
         buildKeybindCategory(builder.getOrCreateCategory(
@@ -384,6 +400,59 @@ public final class ModMenuIntegration implements ModMenuApi {
                 .build());
     }
 
+    private void buildAdsCategory(ConfigCategory category, ConfigEntryBuilder entries, ModConfig config) {
+        category.addEntry(toggle(entries, "spotifycontrol.config.ads.enabled", config.adSkipEnabled, false,
+                value -> config.adSkipEnabled = value));
+
+        category.addEntry(entries.startEnumSelector(Text.translatable("spotifycontrol.config.ads.trigger"),
+                        ModConfig.AdTrigger.class, config.adSkipTrigger)
+                .setDefaultValue(ModConfig.AdTrigger.UNKNOWN_ARTIST)
+                .setEnumNameProvider(trigger -> optionText(trigger))
+                .setTooltip(Text.translatable("spotifycontrol.config.ads.trigger.tooltip"))
+                .setSaveConsumer(value -> config.adSkipTrigger = value)
+                .build());
+
+        category.addEntry(entries.startStrField(Text.translatable("spotifycontrol.config.ads.keywords"),
+                        config.adSkipKeywords == null ? ModConfig.DEFAULT_AD_KEYWORDS : config.adSkipKeywords)
+                .setDefaultValue(ModConfig.DEFAULT_AD_KEYWORDS)
+                .setTooltip(Text.translatable("spotifycontrol.config.ads.keywords.tooltip"))
+                .setSaveConsumer(value -> config.adSkipKeywords = value.trim())
+                .build());
+
+        category.addEntry(entries.startIntSlider(Text.translatable("spotifycontrol.config.ads.cooldown"),
+                        config.adSkipCooldownSeconds, 15, 3600)
+                .setDefaultValue(90)
+                .setTooltip(Text.translatable("spotifycontrol.config.ads.cooldown.tooltip"))
+                .setSaveConsumer(value -> config.adSkipCooldownSeconds = value)
+                .build());
+
+        category.addEntry(entries.startIntSlider(Text.translatable("spotifycontrol.config.ads.max_per_hour"),
+                        config.adSkipMaxPerHour, 1, 30)
+                .setDefaultValue(10)
+                .setTooltip(Text.translatable("spotifycontrol.config.ads.max_per_hour.tooltip"))
+                .setSaveConsumer(value -> config.adSkipMaxPerHour = value)
+                .build());
+
+        category.addEntry(entries.startIntSlider(Text.translatable("spotifycontrol.config.ads.restart_delay"),
+                        config.adSkipRestartDelayMs, 500, 15000)
+                .setDefaultValue(4000)
+                .setTooltip(Text.translatable("spotifycontrol.config.ads.restart_delay.tooltip"))
+                .setSaveConsumer(value -> config.adSkipRestartDelayMs = value)
+                .build());
+
+        category.addEntry(toggle(entries, "spotifycontrol.config.ads.notify", config.adSkipNotify, true,
+                value -> config.adSkipNotify = value));
+        category.addEntry(toggle(entries, "spotifycontrol.config.ads.resume", config.adSkipResumePlayback, true,
+                value -> config.adSkipResumePlayback = value));
+
+        category.addEntry(entries.startBooleanToggle(
+                        Text.translatable("spotifycontrol.config.ads.test_restart"), false)
+                .setDefaultValue(false)
+                .setTooltip(Text.translatable("spotifycontrol.config.ads.test_restart.tooltip"))
+                .setSaveConsumer(this::onTestRestartToggle)
+                .build());
+    }
+
     private void buildKeybindCategory(ConfigCategory category, ConfigEntryBuilder entries) {
         category.addEntry(entries.startTextDescription(
                 Text.translatable("spotifycontrol.config.keybinds.description")).build());
@@ -522,6 +591,17 @@ public final class ModMenuIntegration implements ModMenuApi {
         }
         SpotifyLocalController local = service.local();
         LOGGER.info("Local bridge probe -> {}", local.debugQuery("track"));
+    }
+
+    private void onTestRestartToggle(boolean pressed) {
+        if (!pressed) {
+            return;
+        }
+        SpotifyService service = SpotifyControlClient.service();
+        if (service == null) {
+            return;
+        }
+        service.restartSpotifyNow();
     }
 
     // ---------------------------------------------------------------------------------------------

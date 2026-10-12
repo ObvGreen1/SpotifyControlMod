@@ -82,6 +82,11 @@ public final class SpotifyWebApiClient implements SpotifyController {
     private final AtomicBoolean authorizing = new AtomicBoolean(false);
     private final AtomicInteger consecutiveFailures = new AtomicInteger();
 
+    /** Last shuffle state reported by {@code GET /me/player}; optimistically updated on writes. */
+    private volatile boolean shuffleState;
+    /** Last volume reported by {@code device.volume_percent}, or {@code -1} while unknown. */
+    private volatile int volumePercent = -1;
+
     @Nullable
     private volatile HttpServer callbackServer;
     @Nullable
@@ -166,6 +171,74 @@ public final class SpotifyWebApiClient implements SpotifyController {
 
     @Override
     public boolean canControlRepeat() {
+        return true;
+    }
+
+    @Override
+    public CompletableFuture<Boolean> setShuffle(boolean enabled) {
+        return supplyAsync(() -> {
+            ensureActiveDevice();
+            boolean ok = sendPlayerCommand("PUT",
+                    "/me/player/shuffle?state=" + (enabled ? "true" : "false"), null);
+            if (ok) {
+                shuffleState = enabled;
+            }
+            return ok;
+        });
+    }
+
+    @Override
+    public boolean canControlShuffle() {
+        return true;
+    }
+
+    @Override
+    public boolean shuffleState() {
+        return shuffleState;
+    }
+
+    @Override
+    public CompletableFuture<Boolean> setVolume(int percent) {
+        // The Web API clamps volume_percent to 0-100; there is no server side boost.
+        int clamped = Math.max(0, Math.min(100, percent));
+        return supplyAsync(() -> {
+            ensureActiveDevice();
+            boolean ok = sendPlayerCommand("PUT",
+                    "/me/player/volume?volume_percent=" + clamped, null);
+            if (ok) {
+                volumePercent = clamped;
+            }
+            return ok;
+        });
+    }
+
+    @Override
+    public boolean canControlVolume() {
+        return true;
+    }
+
+    @Override
+    public int maxVolumePercent() {
+        return 100;
+    }
+
+    @Override
+    public int volumePercent() {
+        return volumePercent;
+    }
+
+    @Override
+    public CompletableFuture<Boolean> seek(long positionMs) {
+        long clamped = Math.max(0L, positionMs);
+        return supplyAsync(() -> {
+            ensureActiveDevice();
+            // The service skips ahead optimistically; this only performs the write.
+            return sendPlayerCommand("PUT", "/me/player/seek?position_ms=" + clamped, null);
+        });
+    }
+
+    @Override
+    public boolean canControlSeek() {
         return true;
     }
 
@@ -566,6 +639,11 @@ public final class SpotifyWebApiClient implements SpotifyController {
 
     private TrackInfo fetchCurrentlyPlaying(int attempt) {
         JsonObject json = apiGetJson("/me/player");
+        if (json != null && !json.has("item") && isAdvertisementType(json)) {
+            // Spotify omits "item" for advertisement slots but still reports the playback state, which
+            // is the only reliable ad signal the Web API offers.
+            return TrackInfo.advertisement(isPlaying(json), deviceName(json));
+        }
         if (json == null || json.size() == 0 || !json.has("item")
                 || json.get("item").isJsonNull()) {
             return idleTrack();
@@ -624,12 +702,20 @@ public final class SpotifyWebApiClient implements SpotifyController {
                 if (deviceObject.has("name") && !deviceObject.get("name").isJsonNull()) {
                     device = deviceObject.get("name").getAsString();
                 }
+                if (deviceObject.has("volume_percent")
+                        && !deviceObject.get("volume_percent").isJsonNull()) {
+                    volumePercent = deviceObject.get("volume_percent").getAsInt();
+                }
+            }
+            if (json.has("shuffle_state") && !json.get("shuffle_state").isJsonNull()) {
+                shuffleState = json.get("shuffle_state").getAsBoolean();
             }
 
             consecutiveFailures.set(0);
             lastError = null;
-            return TrackInfo.of(title, artists.toString(), albumName, albumArtUrl, durationMs,
-                    progressMs, isPlaying, repeatMode, device);
+            TrackInfo snapshot = TrackInfo.of(title, artists.toString(), albumName, albumArtUrl,
+                    durationMs, progressMs, isPlaying, repeatMode, device);
+            return isAdvertisementType(json) ? snapshot.withAdvertisement(true) : snapshot;
         } catch (RuntimeException exception) {
             LOGGER.error("Malformed Spotify playback payload (attempt {}): {}", attempt,
                     exception.toString());
@@ -637,6 +723,29 @@ public final class SpotifyWebApiClient implements SpotifyController {
             consecutiveFailures.incrementAndGet();
             return idleTrack();
         }
+    }
+
+    /** {@code true} when the payload explicitly labels the current slot as an advertisement. */
+    private static boolean isAdvertisementType(JsonObject json) {
+        return json.has("currently_playing_type") && !json.get("currently_playing_type").isJsonNull()
+                && "ad".equalsIgnoreCase(json.get("currently_playing_type").getAsString());
+    }
+
+    private static boolean isPlaying(JsonObject json) {
+        return json.has("is_playing") && !json.get("is_playing").isJsonNull()
+                && json.get("is_playing").getAsBoolean();
+    }
+
+    @Nullable
+    private static String deviceName(JsonObject json) {
+        if (!json.has("device") || !json.get("device").isJsonObject()) {
+            return null;
+        }
+        JsonObject deviceObject = json.getAsJsonObject("device");
+        if (!deviceObject.has("name") || deviceObject.get("name").isJsonNull()) {
+            return null;
+        }
+        return deviceObject.get("name").getAsString();
     }
 
     private TrackInfo idleTrack() {

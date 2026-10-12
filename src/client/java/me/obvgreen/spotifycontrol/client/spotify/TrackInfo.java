@@ -18,9 +18,12 @@ import java.util.Objects;
  * @param progressMs   current playback position in milliseconds, {@code 0} when unknown
  * @param isPlaying    {@code true} while the track is actually playing
  * @param repeatMode   current repeat mode reported by the active controller
- * @param device       name of the active playback device, or {@code null}
- * @param lastUpdated  {@link System#currentTimeMillis()} timestamp of this snapshot
- * @param offline      {@code true} when the snapshot could not be produced by a live controller
+ * @param device        name of the active playback device, or {@code null}
+ * @param lastUpdated   {@link System#currentTimeMillis()} timestamp of this snapshot
+ * @param offline       {@code true} when the snapshot could not be produced by a live controller
+ * @param advertisement {@code true} when the backend explicitly reported an advertisement (the Web
+ *                      API exposes this through {@code currently_playing_type == "ad"}); the
+ *                      artist/album heuristics of {@link AdDetector} cover the backends that do not
  */
 public record TrackInfo(
         String title,
@@ -33,7 +36,8 @@ public record TrackInfo(
         RepeatMode repeatMode,
         @Nullable String device,
         long lastUpdated,
-        boolean offline
+        boolean offline,
+        boolean advertisement
 ) {
 
     public static final String UNKNOWN_TITLE = "Unknown Track";
@@ -64,37 +68,54 @@ public record TrackInfo(
                                RepeatMode repeatMode,
                                @Nullable String device) {
         return new TrackInfo(title, artist, album, albumArtUrl, durationMs, progressMs, isPlaying,
-                repeatMode, device, System.currentTimeMillis(), false);
+                repeatMode, device, System.currentTimeMillis(), false, false);
     }
 
     /** The canonical "nothing to show" value used for the offline / unauthenticated HUD state. */
     public static TrackInfo offlineSnapshot() {
         return new TrackInfo(UNKNOWN_TITLE, UNKNOWN_ARTIST, UNKNOWN_ALBUM, null, 0L, 0L, false,
-                RepeatMode.OFF, null, System.currentTimeMillis(), true);
+                RepeatMode.OFF, null, System.currentTimeMillis(), true, false);
+    }
+
+    /**
+     * Placeholder used while the backend only knows that an advertisement slot is playing.
+     *
+     * <p>Not offline on purpose: {@link AdDetector} ignores offline snapshots, so an ad slot has to be
+     * a live snapshot with {@link #advertisement()} set.</p>
+     */
+    public static TrackInfo advertisement(boolean isPlaying, @Nullable String device) {
+        return new TrackInfo("Advertisement", UNKNOWN_ARTIST, UNKNOWN_ALBUM, null, 0L, 0L, isPlaying,
+                RepeatMode.OFF, device, System.currentTimeMillis(), false, true);
     }
 
     /** Returns a copy with an updated progress value, used for client-side interpolation. */
     public TrackInfo withProgress(long newProgressMs, boolean stillPlaying) {
         return new TrackInfo(title, artist, album, albumArtUrl, durationMs, newProgressMs, stillPlaying,
-                repeatMode, device, System.currentTimeMillis(), offline);
+                repeatMode, device, System.currentTimeMillis(), offline, advertisement);
     }
 
     /** Returns a copy flagged as paused, used for optimistic UI updates. */
     public TrackInfo withPlaying(boolean playing) {
         return new TrackInfo(title, artist, album, albumArtUrl, durationMs, progressMs, playing,
-                repeatMode, device, System.currentTimeMillis(), offline);
+                repeatMode, device, System.currentTimeMillis(), offline, advertisement);
     }
 
     /** Returns a copy carrying a new repeat mode. */
     public TrackInfo withRepeatMode(RepeatMode mode) {
         return new TrackInfo(title, artist, album, albumArtUrl, durationMs, progressMs, isPlaying,
-                mode, device, System.currentTimeMillis(), offline);
+                mode, device, System.currentTimeMillis(), offline, advertisement);
     }
 
     /** Returns a copy carrying a new album art URL (kept in sync by the web API controller). */
     public TrackInfo withAlbumArtUrl(@Nullable String url) {
         return new TrackInfo(title, artist, album, url, durationMs, progressMs, isPlaying, repeatMode,
-                device, System.currentTimeMillis(), offline);
+                device, System.currentTimeMillis(), offline, advertisement);
+    }
+
+    /** Returns a copy flagged (or cleared) as an advertisement slot. */
+    public TrackInfo withAdvertisement(boolean isAdvertisement) {
+        return new TrackInfo(title, artist, album, albumArtUrl, durationMs, progressMs, isPlaying,
+                repeatMode, device, System.currentTimeMillis(), offline, isAdvertisement);
     }
 
     public boolean hasDuration() {
@@ -147,7 +168,8 @@ public record TrackInfo(
     @Override
     public String toString() {
         return "TrackInfo[" + displayName() + ", playing=" + isPlaying + ", progress=" + formattedProgress()
-                + "/" + formattedDuration() + ", repeat=" + repeatMode + ", offline=" + offline + "]";
+                + "/" + formattedDuration() + ", repeat=" + repeatMode + ", offline=" + offline
+                + ", advertisement=" + advertisement + "]";
     }
 
     @Override
@@ -162,6 +184,7 @@ public record TrackInfo(
                 && progressMs == info.progressMs
                 && isPlaying == info.isPlaying
                 && offline == info.offline
+                && advertisement == info.advertisement
                 && repeatMode == info.repeatMode
                 && title.equals(info.title)
                 && artist.equals(info.artist)
@@ -173,6 +196,6 @@ public record TrackInfo(
     @Override
     public int hashCode() {
         return Objects.hash(title, artist, album, albumArtUrl, durationMs, progressMs, isPlaying, repeatMode,
-                device, offline);
+                device, offline, advertisement);
     }
 }
