@@ -38,6 +38,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable keybind defaults instead of `UNBOUND`
 - Track-change desktop notifications
 
+## [1.0.1]
+
+### Fixed
+
+- `/spotify menu` and `/spotify gui` now actually open the control console. `ChatScreen` closes
+  itself immediately after the client command it submitted returns, and that close replaced the
+  screen the command had just set, so the chat shut and no panel appeared while the command never
+  reached the server. The console is now queued on the client executor and opened on the following
+  client tick, after the chat screen is gone.
+- Windows native bridge: repeat mode is read by name and written through
+  `[System.Enum]::ToObject($current.GetType(), $code)`. The previous
+  `[Windows.Media.Playback.MediaPlaybackAutoRepeatMode]` type literal does not resolve in
+  PowerShell 5.1, and the failure discarded the whole SMTC payload, which is what left repeat,
+  shuffle, position/time and album art dead on Windows.
+- Track details are probed through SMTC first, so a failing legacy path can no longer hide a healthy
+  media session.
+- Repeat/shuffle writes answer with the requested value and are honoured for 6 seconds
+  (`ASSUMED_STATE_MS`) because Windows refreshes those SMTC properties roughly 4-5 seconds late.
+
 ## [1.1.0]
 
 ### Added
@@ -71,6 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keybinds under `key.category.spotifycontrol` and the `/spotify` command tree.
 - Mod Menu + Cloth Config settings screen; Cloth Config bundled Jar-in-Jar.
 
-[Unreleased]: https://github.com/ObvGreen/SpotifyControlMod/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ObvGreen/SpotifyControlMod/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/ObvGreen/SpotifyControlMod/compare/v1.0.0...v1.0.1
 [1.1.0]: https://github.com/ObvGreen/SpotifyControlMod/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ObvGreen/SpotifyControlMod/releases/tag/v1.0.0

@@ -1,0 +1,9 @@
+// Shared source-holder module.
+//
+// The mod's shared code cannot be compiled here into a single reusable JAR:
+// Java bytecode links against the exact signatures of the Minecraft classes it
+// calls, and those differ between 1.21.x (official Mojang mappings) and 26.x
+// (deobfuscated). Each version project therefore compiles this module's source
+// against its own game jar, by adding these directories to its own source sets.
+//
+// There is intentionally no `java` (or Loom) plugin here.

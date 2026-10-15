@@ -9,8 +9,8 @@ build-out.txt
 # ---------------------------------------------------------------------------
 # Fabric Loom / Minecraft run directory (worlds, logs, options, cached assets)
 # ---------------------------------------------------------------------------
-/run/
-/runs/
+run/
+runs/
 *.log
 last-instance.log
 /logs/
@@ -50,6 +50,11 @@ nbdist/
 Thumbs.db
 desktop.ini
 *~
+
+# ---------------------------------------------------------------------------
+# Superpowers SDD scratch (ledger, briefs, review packages)
+# ---------------------------------------------------------------------------
+/.superpowers/
 
 # ---------------------------------------------------------------------------
 # Mod runtime data that must never be committed

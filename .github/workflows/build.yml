@@ -15,22 +15,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      # The 1.21.x targets are built with a Java 21 toolchain...
+      - name: Set up JDK 21 (1.21.x targets)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
+
+      # ...the 26.x targets need Java 25, and Gradle itself runs on 25.
+      - name: Set up JDK 25 (Gradle + 26.x targets)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
           cache: gradle
+
+      # Make both installed JDKs visible to Gradle's toolchain detection. setup-java
+      # exports JAVA_HOME_<version>_X64, so Gradle can pick the right one per project.
+      - name: Register the JDK toolchains
+        run: |
+          echo "org.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_25_X64" >> ~/.gradle/gradle.properties
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build with Gradle
+      - name: Build all five targets
         run: ./gradlew build --no-daemon
 
-      - name: Upload build artifacts
+      - name: Upload the five mod jars
         uses: actions/upload-artifact@v4
         with:
-          name: spotifycontrol
-          path: build/libs/*.jar
+          name: spotifycontrol-jars
+          path: |
+            */build/libs/spotifycontrol-*.jar
+            !*/build/libs/*-sources.jar
           if-no-files-found: error
