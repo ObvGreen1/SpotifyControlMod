@@ -18,3 +18,13 @@ pluginManagement {
 }
 
 rootProject.name = 'spotifycontrol'
+
+// Shared, version-agnostic source and resources.
+include ':common'
+
+// One sub-project per target Minecraft version.
+include ':1.21.10'
+include ':1.21.11'
+include ':26.1'
+include ':26.2'
+include ':26.3'

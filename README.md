@@ -12,7 +12,7 @@ draws a configurable HUD overlay, ships keybinds, registers `/spotify` commands 
 ```
 OS - Windows / Linux / macOS           Engine - OAuth 2.0 PKCE Web API + native fallback
 Author - ObvGreen                       Package - me.obvgreen.spotifycontrol
-License - MIT                           Current version - 1.1.0
+License - MIT                           Current version - 1.0.1
 ```
 
 > **Disclaimer:** this mod is an independent community project. It is not affiliated with, endorsed
@@ -38,7 +38,7 @@ License - MIT                           Current version - 1.1.0
 ## Installation
 
 1. Install [Fabric Loader](https://fabricmc.net/use/installer/) for **1.21.11**.
-2. Drop **Spotify Control** (`spotifycontrol-1.1.0.jar`), **Fabric API**, and optionally **Mod Menu**
+2. Drop **Spotify Control** (`spotifycontrol-1.0.1.jar`), **Fabric API**, and optionally **Mod Menu**
    into `.minecraft/mods`.
 3. Start the game. The HUD shows *Spotify Offline* until you log in (Web API) or a local media
    session is found (fallback).
@@ -58,7 +58,7 @@ License - MIT                           Current version - 1.1.0
 ./gradlew build            # Windows: .\gradlew.bat build
 ```
 
-The remapped mod lands in `build/libs/spotifycontrol-1.1.0.jar`. Use Java 21 for the build, e.g.:
+The remapped mod lands in `build/libs/spotifycontrol-1.0.1.jar`. Use Java 21 for the build, e.g.:
 
 ```powershell
 $env:JAVA_HOME = "C:\Users\<you>\.jdks\ms-21.0.11"

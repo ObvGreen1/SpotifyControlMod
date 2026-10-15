@@ -1,0 +1,285 @@
+// Shared configuration applied by every target-version project.
+//
+// Version-specific values come from the project's own gradle.properties
+// (minecraft_version, loom_plugin_id, java_version, dependency versions,
+// fabric.mod.json ranges) plus the root gradle.properties (mod metadata,
+// loader, loom version).
+//
+// Shared source lives in :common and is compiled here against this project's
+// game jar. Loom picks the correct mode from the plugin id applied in the
+// version project's build.gradle: `...-remap` for obfuscated 1.21.x,
+// `net.fabricmc.fabric-loom` for deobfuscated 26.x.
+
+version = "${mod_version}+${minecraft_version}"
+base {
+    archivesName = archives_base_name
+}
+
+def remap = loom_plugin_id.contains('remap')
+
+loom {
+    splitEnvironmentSourceSets()
+
+    mods {
+        "${mod_id}" {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.client
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared source from :common, compiled against this project's game.
+// ---------------------------------------------------------------------------
+def commonDir = project(':common').projectDir
+
+def commonMainJava = new File(commonDir, 'src/main/java')
+def commonClientJava = new File(commonDir, 'src/client/java')
+def commonResources = new File(commonDir, 'src/main/resources')
+
+// 1.21.10 ships the official class as net.minecraft.resources.ResourceLocation;
+// 1.21.11 renamed it to Identifier, a name kept by every 26.x target. Rather
+// than duplicate six files, versions that predate the rename compile a
+// generated copy of the shared sources with that single token rewritten.
+def usesResourceLocation =
+        (findProperty('uses_resource_location') ?: 'false').toString().toBoolean()
+
+// The deobfuscated 26.x client reorganised its rendering and registration API:
+// GuiGraphics became GuiGraphicsExtractor, Screen#render became #extractRenderState,
+// the HUD callback moved to HudElementRegistry, ClientCommandManager became
+// ClientCommands, KeyBindingHelper became KeyMappingHelper, the GLFW key constants
+// moved onto InputConstants, setScreen/screen/hideGui moved onto Gui/Hud, and
+// ConfirmLinkScreen now takes a URI. The behavioural logic is identical, so 26.x
+// compiles a generated copy of the shared sources with only those API tokens
+// rewritten - the same mechanism (and same single source of truth) as the
+// ResourceLocation rename above.
+def uses26Api = (findProperty('uses_26_api') ?: 'false').toString().toBoolean()
+
+// The 26.x client API kept shifting between minors, so two of the rewrites below are
+// only correct from a certain version on. They are derived from the target version so
+// they cannot drift out of sync with the version project's minecraft_version:
+//   26.2 moved the current screen, setScreen and the hidden-HUD flag off
+//        Minecraft/Options and onto Gui/Hud. 26.1 still uses the old locations.
+//   26.3 renamed InputConstants.Type.KEYSYM to KEYBOARD. 26.1/26.2 still call it KEYSYM.
+def mcVersionParts = minecraft_version.tokenize('.').collect { it.isInteger() ? it.toInteger() : 0 }
+def mcMajor = mcVersionParts.size() > 0 ? mcVersionParts[0] : 0
+def mcMinor = mcVersionParts.size() > 1 ? mcVersionParts[1] : 0
+def screenApiOnGui = (mcMajor > 26) || (mcMajor == 26 && mcMinor >= 2)
+def keyboardInputType = (mcMajor > 26) || (mcMajor == 26 && mcMinor >= 3)
+
+if (usesResourceLocation) {
+    def genRoot = layout.buildDirectory.dir('generated/shared-source').get().asFile
+    def genMainOut = new File(genRoot, 'main/java')
+    def genClientOut = new File(genRoot, 'client/java')
+    def rewrite = { String line -> line.replaceAll(/\bIdentifier\b/, 'ResourceLocation') }
+
+    def genMain = tasks.register('generateSharedMainSources', Sync) {
+        from(commonMainJava) { filter { rewrite(it) } }
+        into(genMainOut)
+    }
+    def genClient = tasks.register('generateSharedClientSources', Sync) {
+        from(commonClientJava) { filter { rewrite(it) } }
+        into(genClientOut)
+    }
+
+    // Passing the TaskProvider (not the bare directory) makes Gradle register the
+    // producer as a dependency of every task that consumes the source set,
+    // including compileJava, compileClientJava and sourcesJar.
+    sourceSets {
+        main {
+            java.srcDir genMain
+            resources.srcDir commonResources
+        }
+        client {
+            java.srcDir genClient
+        }
+    }
+} else if (uses26Api) {
+    def genRoot = layout.buildDirectory.dir('generated/shared-source').get().asFile
+    def genMainOut = new File(genRoot, 'main/java')
+    def genClientOut = new File(genRoot, 'client/java')
+
+    // Ordered [regex, replacement] pairs applied to every line. Order matters: the
+    // specific patterns run before the generic ones they would otherwise swallow
+    // (GLFW_KEY_UNKNOWN before GLFW_KEY_*, GuiGraphics before GuiGraphicsExtractor).
+    // Replacements avoid new imports on purpose - fully qualified names are used
+    // where a rewritten token needs a type the source does not already import.
+    def rules = [
+            // Client draw context: type + text primitive renamed.
+            [/\bGuiGraphics\b/, 'GuiGraphicsExtractor'],
+            [/\.drawString\(/, '.text('],
+            // Screen / widget render hooks renamed.
+            [/public void render\(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta\)/,
+             'public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta)'],
+            [/super\.render\(context, mouseX, mouseY, delta\)/,
+             'super.extractRenderState(context, mouseX, mouseY, delta)'],
+            [/protected void renderWidget\(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta\)/,
+             'protected void extractWidgetRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta)'],
+            // HUD registration: HudRenderCallback -> HudElementRegistry (added last, as the
+            // callback used to fire at the end of the vanilla HUD pass).
+            [/import net\.fabricmc\.fabric\.api\.client\.rendering\.v1\.HudRenderCallback;/,
+             'import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;'],
+            [/HudRenderCallback\.EVENT\.register\(\(drawContext, tickCounter\) -> hud\.render\(/,
+             'HudElementRegistry.addLast(net.minecraft.resources.Identifier.fromNamespaceAndPath("spotifycontrol", "hud"), (drawContext, tickCounter) -> hud.render('],
+            // Client command builder moved to ClientCommands.
+            [/import net\.fabricmc\.fabric\.api\.client\.command\.v2\.ClientCommandManager;/,
+             'import net.fabricmc.fabric.api.client.command.v2.ClientCommands;'],
+            [/\bClientCommandManager\./, 'ClientCommands.'],
+            // Keybind helper moved; GLFW key constants became InputConstants constants.
+            [/import net\.fabricmc\.fabric\.api\.client\.keybinding\.v1\.KeyBindingHelper;/,
+             'import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;'],
+            [/\bKeyBindingHelper\.registerKeyBinding\(/, 'KeyMappingHelper.registerKeyMapping('],
+            [/import org\.lwjgl\.glfw\.GLFW;/,
+             'import com.mojang.blaze3d.platform.InputConstants;'],
+            [/GLFW\.GLFW_KEY_UNKNOWN/, 'InputConstants.UNKNOWN.getValue()'],
+            [/GLFW\.GLFW_KEY_(\w+)/, 'InputConstants.KEY_$1'],
+            // Player#displayClientMessage(message, false) was split into a chat path and an
+            // action-bar path; the chat path (false) is sendSystemMessage.
+            [/\.displayClientMessage\(/, '.sendSystemMessage('],
+            [/\.append\(Component\.literal\(message\)\.withStyle\(ChatFormatting\.WHITE\)\), false\);/,
+             '.append(Component.literal(message).withStyle(ChatFormatting.WHITE)));'],
+            // ConfirmLinkScreen#confirmLinkNow now takes a URI instead of a String.
+            [/ConfirmLinkScreen\.confirmLinkNow\(([^,]+), ("[^"]*"), true\)/,
+             'ConfirmLinkScreen.confirmLinkNow($1, java.net.URI.create($2), true)'],
+    ]
+
+    // 26.3 renamed the keysym input type to KEYBOARD; 26.1/26.2 still call it KEYSYM.
+    if (keyboardInputType) {
+        rules << [/InputConstants\.Type\.KEYSYM/, 'InputConstants.Type.KEYBOARD']
+    }
+
+    // 26.2 moved setScreen, the current screen and the hidden-HUD flag onto Gui/Hud;
+    // 26.1 still reaches them through Minecraft#screen / Minecraft#setScreen / Options#hideGui.
+    if (screenApiOnGui) {
+        rules << [/\.setScreen\(/, '.gui.setScreen(']
+        rules << [/\.screen\)/, '.gui.screen())']
+        rules << [/\.screen;/, '.gui.screen();']
+        rules << [/client\.options\.hideGui/, 'client.gui.hud.isHidden()']
+    }
+
+    def rewrite = { String line ->
+        for (def rule : rules) {
+            line = line.replaceAll(rule[0], rule[1])
+        }
+        line
+    }
+
+    def genMain = tasks.register('generateSharedMainSources', Sync) {
+        inputs.property('apiRewrite', rules.toString())
+        from(commonMainJava) { filter { rewrite(it) } }
+        into(genMainOut)
+    }
+    def genClient = tasks.register('generateSharedClientSources', Sync) {
+        inputs.property('apiRewrite', rules.toString())
+        from(commonClientJava) { filter { rewrite(it) } }
+        into(genClientOut)
+    }
+
+    sourceSets {
+        main {
+            java.srcDir genMain
+            resources.srcDir commonResources
+        }
+        client {
+            java.srcDir genClient
+        }
+    }
+} else {
+    sourceSets {
+        main {
+            java.srcDir commonMainJava
+            resources.srcDir commonResources
+        }
+        client {
+            java.srcDir commonClientJava
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dependencies
+// ---------------------------------------------------------------------------
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
+
+    if (remap) {
+        // Obfuscated target (1.21.x): official Mojang mappings + remapping.
+        mappings loom.officialMojangMappings()
+        modImplementation "net.fabricmc:fabric-loader:${loader_version}"
+        modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+
+        modImplementation("com.terraformersmc:modmenu:${modmenu_version}") {
+            exclude group: 'net.fabricmc.fabric-api'
+        }
+        modApi("me.shedaniel.cloth:cloth-config-fabric:${cloth_config_version}") {
+            exclude group: 'net.fabricmc.fabric-api'
+        }
+    } else {
+        // Deobfuscated target (26.x): names are official already, no remap.
+        implementation "net.fabricmc:fabric-loader:${loader_version}"
+        implementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+
+        implementation("com.terraformersmc:modmenu:${modmenu_version}") {
+            exclude group: 'net.fabricmc.fabric-api'
+        }
+        implementation("me.shedaniel.cloth:cloth-config-fabric:${cloth_config_version}") {
+            exclude group: 'net.fabricmc.fabric-api'
+        }
+    }
+
+    // Cloth Config is bundled (Jar-in-Jar) so the config screen always works.
+    include("me.shedaniel.cloth:cloth-config-fabric:${cloth_config_version}") {
+        exclude group: 'net.fabricmc.fabric-api'
+    }
+}
+
+// ---------------------------------------------------------------------------
+// fabric.mod.json property expansion
+// ---------------------------------------------------------------------------
+processResources {
+    inputs.property 'version', version
+    inputs.property 'minecraft_version', minecraft_version
+    inputs.property 'minecraft_range', minecraft_range
+    inputs.property 'loader_version', loader_version
+    inputs.property 'modmenu_range', modmenu_range
+    inputs.property 'cloth_range', cloth_range
+    inputs.property 'keybinding_module', keybinding_module
+    inputs.property 'java_version', java_version
+
+    filesMatching('fabric.mod.json') {
+        expand(
+                'version': version,
+                'minecraft_version': minecraft_version,
+                'minecraft_range': minecraft_range,
+                'loader_version': loader_version,
+                'modmenu_range': modmenu_range,
+                'cloth_range': cloth_range,
+                'keybinding_module': keybinding_module,
+                'java_version': java_version
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Java toolchain and language level
+// ---------------------------------------------------------------------------
+def javaLevel = java_version as int
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = javaLevel
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(javaLevel)
+    }
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.toVersion(javaLevel)
+    targetCompatibility = JavaVersion.toVersion(javaLevel)
+}
+
+jar {
+    from(rootProject.file('LICENSE')) {
+        rename { "${it}_${base.archivesName.get()}" }
+    }
+}
